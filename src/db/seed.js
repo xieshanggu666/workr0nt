@@ -369,8 +369,9 @@ const seedReview5 = {
 
 // 种子版本：v1 基础数据；v2 缺口工单演示数据（含 rev-4 评审留痕与 doc-3 审批回写）；
 // v3 文档访问申请演示数据（doc-9 保密文档上的限时阅读/协作授权、撤销与到期留痕）；
-// v4 版本快照回填与 doc-2 恢复演示（v2 误删 + rev-5 恢复评审通过 + v3 恢复边界标记）
-const SEED_VER = '4'
+// v4 版本快照回填与 doc-2 恢复演示（v2 误删 + rev-5 恢复评审通过 + v3 恢复边界标记）；
+// v5 知识保鲜演示（doc-8 逾期整改中 / doc-1 修订送审中 / doc-5 复核通过 / doc-6 保鲜运行中）
+const SEED_VER = '5'
 
 async function isSeeded() {
   return (await getMeta('seeded')) === SEED_VER
@@ -523,9 +524,133 @@ async function ensureRestoreSeed() {
   }
 }
 
+// ---- 知识保鲜演示（v5 增量种子）----
+// doc-8：30 天周期，已逾期 2 天、管理员此前驳回过一次（fr-1 rejected，待整改），问答引用暂停。
+// doc-4：180 天周期已逾期，王子薇修订后送保鲜复核（rev-6 pending，fr-2 submitted），文档锁定。
+// doc-5：365 天周期，上一轮「确认内容有效」复核通过（rev-7 approved, noChange），周期重算中。
+// doc-6：90 天周期，保鲜运行中，约 6 小时后到期（演示调度器临近到期但暂不触发）。
+
+// doc-4 的保鲜修订快照（补充验收数据口径，rev-6 待审批）
+const doc4FreshBody = '<h2>评审前必查项</h2><ol><li>目标用户与使用场景是否明确</li><li>数据埋点是否齐全</li><li>异常态与边界是否覆盖</li><li>是否有对应的验收标准</li><li>验收数据口径是否与数据团队对齐</li></ol><p>请在 <b>评审前 24h</b> 将 PRD 同步到知识库并 @ 相关成员。</p>'
+
+const seedFreshReviews = [
+  {
+    id: 'rev-6', docId: 'doc-4', status: 'pending',
+    submittedBy: 'u-ziwei', submittedAt: ago(3 * h),
+    snapshot: {
+      title: '产品需求评审 Checklist',
+      body: doc4FreshBody,
+      categoryId: 'c-product', tagIds: ['t-guide', 't-faq'], visibility: 'public'
+    },
+    baseVersion: 1,
+    freshTicketId: 'fr-2', freshRound: 1, freshNoChange: false,
+    decidedBy: null, decidedAt: null, decisionNote: '',
+    timeline: [
+      { action: 'fresh-submit', by: 'u-ziwei', at: ago(3 * h), note: '保鲜复核：补充验收数据口径一条，请复核。' }
+    ]
+  },
+  {
+    id: 'rev-7', docId: 'doc-5', status: 'approved',
+    submittedBy: 'u-admin', submittedAt: ago(10 * d),
+    snapshot: {
+      title: '新成员入职指引',
+      body: seedDocs.find((x) => x.id === 'doc-5').body,
+      categoryId: 'c-life', tagIds: ['t-onboarding', 't-faq'], visibility: 'public'
+    },
+    baseVersion: 1,
+    freshTicketId: 'fr-3', freshRound: 1, freshNoChange: true,
+    decidedBy: 'u-admin', decidedAt: ago(10 * d), decisionNote: '入职流程本季度无变化，确认继续有效。',
+    timeline: [
+      { action: 'fresh-submit-nochange', by: 'u-admin', at: ago(10 * d), note: '年度复核：入职流程无变化。' },
+      { action: 'approve', by: 'u-admin', at: ago(10 * d), note: '入职流程本季度无变化，确认继续有效。' }
+    ]
+  }
+]
+
+const seedFreshTickets = [
+  {
+    id: 'fr-1', docId: 'doc-8', round: 1, status: 'rejected',
+    cycleDays: 30, dueAt: ago(2 * d),
+    reviewId: null, submittedBy: 'u-chen', submittedAt: ago(1 * d + 4 * h),
+    decidedBy: 'u-admin', decidedAt: ago(1 * d),
+    decisionNote: '强制改密周期需与运维确认后再修订，请补充具体策略。',
+    createdAt: ago(2 * d),
+    timeline: [
+      { action: 'due', by: 'system', at: ago(2 * d), note: '复核周期到点，自动生成复核单并暂停问答引用' },
+      { action: 'submit', by: 'u-chen', at: ago(1 * d + 4 * h), note: '复核安全基线条目，无实质修改，请确认。' },
+      { action: 'reject', by: 'u-admin', at: ago(1 * d), note: '强制改密周期需与运维确认后再修订，请补充具体策略。' }
+    ]
+  },
+  {
+    id: 'fr-2', docId: 'doc-4', round: 1, status: 'submitted',
+    cycleDays: 180, dueAt: ago(1 * d),
+    reviewId: 'rev-6', submittedBy: 'u-ziwei', submittedAt: ago(3 * h),
+    decidedBy: null, decidedAt: null, decisionNote: '',
+    createdAt: ago(1 * d),
+    timeline: [
+      { action: 'due', by: 'system', at: ago(1 * d), note: '复核周期到点，自动生成复核单并暂停问答引用' },
+      { action: 'submit', by: 'u-ziwei', at: ago(3 * h), note: '保鲜复核：补充验收数据口径一条，请复核。' }
+    ]
+  },
+  {
+    id: 'fr-3', docId: 'doc-5', round: 1, status: 'approved',
+    cycleDays: 365, dueAt: ago(10 * d),
+    reviewId: 'rev-7', submittedBy: 'u-admin', submittedAt: ago(10 * d),
+    decidedBy: 'u-admin', decidedAt: ago(10 * d),
+    decisionNote: '入职流程本季度无变化，确认继续有效。',
+    nextDueAt: ago(-355 * d),
+    createdAt: ago(10 * d),
+    timeline: [
+      { action: 'due', by: 'system', at: ago(10 * d), note: '复核周期到点，自动生成复核单并暂停问答引用' },
+      { action: 'submit-nochange', by: 'u-admin', at: ago(10 * d), note: '年度复核：入职流程无变化。' },
+      { action: 'approve', by: 'u-admin', at: ago(10 * d), note: '入职流程本季度无变化，确认继续有效。' }
+    ]
+  }
+]
+
+async function ensureFreshnessSeed() {
+  if ((await db.freshnessTickets.count()) > 0) return
+  await db.freshnessTickets.bulkAdd(seedFreshTickets)
+  for (const rv of seedFreshReviews) {
+    if (!(await db.reviews.get(rv.id))) await db.reviews.add(rv)
+  }
+  // doc-8：30 天周期逾期整改中（问答引用暂停），沿用 rev-3 的驳回结论与 v1 版本
+  const doc8 = await db.docs.get('doc-8')
+  if (doc8 && !doc8.freshness) {
+    await db.docs.update('doc-8', { freshness: { cycleDays: 30, nextDueAt: ago(2 * d), round: 1, activeTicket: 'fr-1' } })
+  }
+  // doc-4：保鲜复核送审中，文档锁定，正文仍为旧版（rev-6 快照通过后才回写）
+  const doc4 = await db.docs.get('doc-4')
+  if (doc4 && !doc4.freshness) {
+    await db.docs.update('doc-4', {
+      publishState: 'in_review',
+      activeReviewId: 'rev-6',
+      freshness: { cycleDays: 180, nextDueAt: ago(1 * d), round: 1, activeTicket: 'fr-2' }
+    })
+  }
+  // doc-5：上一轮「确认有效」复核通过，noChange 不产生新版本，周期重算至约 355 天后
+  const doc5 = await db.docs.get('doc-5')
+  if (doc5 && !doc5.freshness) {
+    const approvedAt = ago(10 * d)
+    await db.docs.update('doc-5', {
+      updatedAt: approvedAt,
+      lastReview: { reviewId: 'rev-7', status: 'approved', by: 'u-admin', at: approvedAt, note: '入职流程本季度无变化，确认继续有效。' },
+      freshness: {
+        cycleDays: 365, nextDueAt: ago(-355 * d), round: 1, activeTicket: null,
+        lastApprovedAt: approvedAt, lastApprovedBy: 'u-admin', lastReviewId: 'rev-7'
+      }
+    })
+  }
+  // doc-6：90 天周期保鲜运行中，约 6 小时后到期（不到点，不生成复核单、不影响引用）
+  const doc6 = await db.docs.get('doc-6')
+  if (doc6 && !doc6.freshness) {
+    await db.docs.update('doc-6', { freshness: { cycleDays: 90, nextDueAt: ago(-6 * h), round: 0, activeTicket: null } })
+  }
+}
+
 export async function ensureSeeded() {
   if (await isSeeded()) return
-  await db.transaction('rw', db.users, db.categories, db.tags, db.docs, db.comments, db.shares, db.favorites, db.ratings, db.reviews, db.gapTickets, db.accessRequests, async () => {
+  await db.transaction('rw', db.users, db.categories, db.tags, db.docs, db.comments, db.shares, db.favorites, db.ratings, db.reviews, db.gapTickets, db.accessRequests, db.freshnessTickets, async () => {
     if ((await db.users.count()) === 0) {
       await db.users.bulkAdd(seedUsers)
       await db.categories.bulkAdd(seedCategories)
@@ -540,6 +665,7 @@ export async function ensureSeeded() {
     await ensureGapSeed()
     await ensureAccessSeed()
     await ensureRestoreSeed()
+    await ensureFreshnessSeed()
   })
   await setMeta('seeded', SEED_VER)
 }

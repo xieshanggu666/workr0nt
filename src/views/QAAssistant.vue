@@ -5,7 +5,9 @@ import { useKbStore } from '@/stores/kb'
 import { useAuthStore } from '@/stores/auth'
 import { useGapStore } from '@/stores/gap'
 import { useAccessStore } from '@/stores/access'
+import { useFreshnessStore } from '@/stores/freshness'
 import { canViewDoc } from '@/utils/permission'
+import { isDocCitable } from '@/utils/freshness'
 import { extractKeywords, scoreDoc } from '@/utils/qa'
 import { latestRestoreInfo } from '@/utils/version'
 import { gapStatusLabel } from '@/utils/gap'
@@ -18,6 +20,7 @@ const kb = useKbStore()
 const auth = useAuthStore()
 const gapStore = useGapStore()
 const accessStore = useAccessStore()
+const freshnessStore = useFreshnessStore()
 
 const question = ref('')
 const asked = ref('')
@@ -31,13 +34,20 @@ const rawRelated = ref([])
 const suggestions = ['Vue 如何初始化项目?', 'Dexie 怎么进行查询?', '权限模型里有哪些角色?', '新成员入职流程是什么?']
 
 // 展示用引用/相关条目：随授权记录与到期时钟响应式重算，被收回的受限内容即时消失
-const cites = computed(() => rawCites.value.filter((c) => canViewDoc(c, auth.user?.id, null, accessStore.grantOf(c.id, auth.user?.id))))
-const related = computed(() => rawRelated.value.filter((d) => canViewDoc(d, auth.user?.id, null, accessStore.grantOf(d.id, auth.user?.id))))
-// 已渲染答案中被收回的受限引用数（授权撤销/到期导致）
+function grantOf(d) { return accessStore.grantOf(d.id, auth.user?.id) }
+function freshTicketOf(d) { return freshnessStore.activeTicketOf(d.id) }
+const cites = computed(() => rawCites.value.filter((c) => canViewDoc(c, auth.user?.id, null, grantOf(c)) && isDocCitable(c, freshTicketOf(c), freshnessStore.now)))
+const related = computed(() => rawRelated.value.filter((d) => canViewDoc(d, auth.user?.id, null, grantOf(d)) && isDocCitable(d, freshTicketOf(d), freshnessStore.now)))
+// 已渲染答案中被收回的引用数（限时授权撤销/到期，或知识保鲜暂停引用导致）
 const revokedCount = computed(() => rawCites.value.length - cites.value.length)
+// 其中因知识保鲜到期暂停引用的篇数（用于给出针对性提示）
+const freshnessPausedCount = computed(() => rawCites.value.filter((c) => canViewDoc(c, auth.user?.id, null, grantOf(c)) && !isDocCitable(c, freshTicketOf(c), freshnessStore.now)).length)
 // 答案文案：引用全部被收回时，不再保留「找到相关内容」的原始表述
 const answerText = computed(() => {
   if (revokedCount.value && !cites.value.length) {
+    if (freshnessPausedCount.value) {
+      return '该问题此前命中的内容已超过复核周期、正在保鲜复核中，问答引用已暂停。待编辑者修订并经管理员复核通过、重算复核周期后会恢复引用。'
+    }
     return '该问题此前命中的内容来自限时授权文档，授权已撤销或到期，相关正文已同步收回。如需继续查看，请重新申请访问后再提问。'
   }
   return answer.value
@@ -85,28 +95,43 @@ function answering() {
   setTimeout(() => {
     const keywords = extractKeywords(asked.value)
     const tagNames = kb.tags
-    // 权限：撤销/到期的授权文档不再作为问答引用来源
-    const hits = kb.docs.filter((d) => canViewDoc(d, auth.user?.id, null, accessStore.grantOf(d.id, auth.user?.id))).map((d) => ({
-      doc: d,
-      bodyText: stripHtml(d.body),
-      score: scoreDoc(d, keywords, tagNames, stripHtml(d.body))
-    })).filter((x) => x.score > 0).sort((a, b) => b.score - a.score)
+    // 可见但处于知识保鲜暂停期（周期到点/复核中）的命中：不作为引用来源，仅记录篇数给出提示
+    let pausedHits = 0
+    // 权限：撤销/到期的授权文档不再作为问答引用来源；知识保鲜到期/复核中的文档暂停问答引用
+    const hits = kb.docs
+      .filter((d) => canViewDoc(d, auth.user?.id, null, grantOf(d)))
+      .map((d) => {
+        const bodyText = stripHtml(d.body)
+        return {
+          doc: d,
+          bodyText,
+          citable: isDocCitable(d, freshTicketOf(d), freshnessStore.now),
+          score: scoreDoc(d, keywords, tagNames, bodyText)
+        }
+      })
+      .filter((x) => x.score > 0)
+      .sort((a, b) => b.score - a.score)
 
-    const top = hits[0]
+    pausedHits = hits.filter((x) => !x.citable).length
+    const citableHits = hits.filter((x) => x.citable)
+
+    const top = citableHits[0]
     if (!top) {
       answered.value = true
-      answer.value = '很抱歉，知识库中暂时没有与「' + asked.value + '」直接匹配的内容。建议你换一种表述，或浏览文档库 / 使用全局搜索。'
+      answer.value = pausedHits
+        ? '与「' + asked.value + '」相关的内容已超过复核周期、正在保鲜复核中，已暂停问答引用。待编辑者修订并经管理员复核通过后会恢复引用，你也可以直接在文档库中查看原文。'
+        : '很抱歉，知识库中暂时没有与「' + asked.value + '」直接匹配的内容。建议你换一种表述，或浏览文档库 / 使用全局搜索。'
       return
     }
 
-    answer.value = '基于知识库检索，我找到与「' + asked.value + '」相关的内容，引用来源如下。' + (hits.length > 1 ? ' 我对其归纳后优先展示最相关的 ' + Math.min(hits.length, 3) + ' 篇文档。' : '')
-    rawCites.value = hits.slice(0, 3).map((h) => ({
+    answer.value = '基于知识库检索，我找到与「' + asked.value + '」相关的内容，引用来源如下。' + (citableHits.length > 1 ? ' 我对其归纳后优先展示最相关的 ' + Math.min(citableHits.length, 3) + ' 篇文档。' : '') + (pausedHits ? '（另有 ' + pausedHits + ' 篇相关文档因超过复核周期正在保鲜复核，暂未引用）' : '')
+    rawCites.value = citableHits.slice(0, 3).map((h) => ({
       ...h.doc,
       bodyText: h.bodyText,
       snippet: extractSnippet(h.doc.body, keywords),
       score: h.score
     }))
-    rawRelated.value = hits.slice(3, 7).map((h) => h.doc)
+    rawRelated.value = citableHits.slice(3, 7).map((h) => h.doc)
     thinking.value = false
     answered.value = true
   }, 600)
@@ -136,7 +161,10 @@ watch(() => route.query.q, (v) => { if (v) { question.value = v; ask(v) } }, { i
     <div v-if="answered" class="answer card">
       <div class="a-label">助手回答<span class="sub-ask">问题：{{ asked }}</span></div>
       <p class="a-text">{{ answerText }}</p>
-      <div v-if="revokedCount" class="revoked-note">🔒 {{ revokedCount }} 条引用来自限时授权文档，授权已撤销或到期，相关正文已同步收回</div>
+      <div v-if="revokedCount" class="revoked-note">
+        <template v-if="freshnessPausedCount">🧊 {{ freshnessPausedCount }} 条引用因超过复核周期正在保鲜复核，问答引用已暂停，复核通过后自动恢复</template>
+        <template v-else>🔒 {{ revokedCount }} 条引用来自限时授权文档，授权已撤销或到期，相关正文已同步收回</template>
+      </div>
 
       <div v-if="cites.length" class="cites">
         <div class="block-title">📎 引用出处</div>

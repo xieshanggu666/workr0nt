@@ -8,7 +8,8 @@ import MemberSelect from '@/components/common/MemberSelect.vue'
 import { formatDate, formatFull, avatarColor } from '@/utils/format'
 import {
   REVIEW, reviewStatusLabel, canWithdrawReview, canReviewDecision,
-  canCommentReview, canSubmitReview, timelineActionLabel, isRestoreReview
+  canCommentReview, canSubmitReview, timelineActionLabel, isRestoreReview,
+  isFreshReview, isFreshNoChangeReview
 } from '@/utils/review'
 import { GUEST_ID } from '@/utils/permission'
 import { diffBodyLines, versionRangeText } from '@/utils/version'
@@ -172,6 +173,9 @@ watch(pending, (p) => { if (!p) decisionOpen.value = false })
         <span class="tm">{{ formatFull(pending.submittedAt) }}</span>
         <span class="ver">基于 v{{ pending.baseVersion }}</span>
         <span v-if="restoreFrom" class="restore-tag">↩ 恢复至 v{{ restoreFrom.version }}</span>
+        <span v-if="isFreshReview(pending)" class="fresh-tag">
+          🧊 知识保鲜复核 · 第 {{ pending.freshRound }} 轮{{ isFreshNoChangeReview(pending) ? '（确认内容有效）' : '（修订）' }}
+        </span>
       </div>
 
       <!-- 恢复评审：恢复目标、回滚边界预览与正文差异 -->
@@ -249,6 +253,7 @@ watch(pending, (p) => { if (!p) decisionOpen.value = false })
         <div class="h-head" @click="toggle(shownFirst.id)">
           <span class="st sm" :class="statusCls(shownFirst)">{{ reviewStatusLabel(shownFirst.status) }}</span>
           <span v-if="isRestoreReview(shownFirst)" class="restore-tag sm">↩ 恢复至 v{{ shownFirst.restoreFrom.version }}</span>
+          <span v-if="isFreshReview(shownFirst)" class="fresh-tag sm">🧊 保鲜第 {{ shownFirst.freshRound }} 轮</span>
           <span class="h-who">{{ userById[shownFirst.submittedBy]?.name }}</span>
           <span class="h-tm">{{ formatDate(shownFirst.submittedAt) }}</span>
           <span class="h-arrow">{{ isExpanded(shownFirst.id) ? '收起 ▲' : '展开 ▼' }}</span>
@@ -266,6 +271,7 @@ watch(pending, (p) => { if (!p) decisionOpen.value = false })
         <div class="h-head" @click="toggle(r.id)">
           <span class="st sm" :class="statusCls(r)">{{ reviewStatusLabel(r.status) }}</span>
           <span v-if="isRestoreReview(r)" class="restore-tag sm">↩ 恢复至 v{{ r.restoreFrom.version }}</span>
+          <span v-if="isFreshReview(r)" class="fresh-tag sm">🧊 保鲜第 {{ r.freshRound }} 轮</span>
           <span class="h-who">{{ userById[r.submittedBy]?.name }}</span>
           <span class="h-tm">{{ formatDate(r.submittedAt) }}</span>
           <span class="h-arrow">{{ isExpanded(r.id) ? '收起 ▲' : '展开 ▼' }}</span>
@@ -302,6 +308,8 @@ watch(pending, (p) => { if (!p) decisionOpen.value = false })
 .tm, .ver { color: var(--text-3); font-size: 12px; }
 .restore-tag { font-size: 11px; padding: 1px 9px; border-radius: 999px; background: #e0e7ff; color: #4338ca; font-weight: 600; }
 .restore-tag.sm { font-size: 10px; padding: 0 7px; }
+.fresh-tag { font-size: 11px; padding: 1px 9px; border-radius: 999px; background: #cffafe; color: #0e7490; font-weight: 600; }
+.fresh-tag.sm { font-size: 10px; padding: 0 7px; }
 .restore-info { margin-top: 10px; padding: 10px 14px; border-radius: 8px; background: #eef2ff; border: 1px solid #c7d2fe; }
 .ri-line { font-size: 12.5px; color: #3730a3; margin-bottom: 6px; line-height: 1.6; }
 .concurrent-warn { color: #b45309; font-weight: 600; }

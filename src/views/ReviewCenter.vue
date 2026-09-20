@@ -6,7 +6,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useReviewStore } from '@/stores/review'
 import DocPill from '@/components/common/DocPill.vue'
 import { formatDate, formatFull, avatarColor } from '@/utils/format'
-import { REVIEW, reviewStatusLabel, canReviewDecision, timelineActionLabel, isRestoreReview } from '@/utils/review'
+import { REVIEW, reviewStatusLabel, canReviewDecision, timelineActionLabel, isRestoreReview, isFreshReview, isFreshNoChangeReview } from '@/utils/review'
 
 const router = useRouter()
 const kb = useKbStore()
@@ -100,6 +100,7 @@ onMounted(async () => {
             {{ userById[r.submittedBy]?.name || r.submittedBy }} 发起
           </span>
           <span v-if="isRestoreReview(r)" class="restore-tag">↩ 恢复至 v{{ r.restoreFrom.version }}</span>
+          <span v-if="isFreshReview(r)" class="fresh-tag">🧊 知识保鲜复核 · 第 {{ r.freshRound }} 轮{{ isFreshNoChangeReview(r) ? '（确认有效）' : '（修订）' }}</span>
           <span class="base">基于 v{{ r.baseVersion }}</span>
           <span class="cc">💬 {{ commentCount(r) }} 条意见</span>
           <span v-if="r.decidedAt" class="decided">
@@ -167,6 +168,7 @@ onMounted(async () => {
 .ava { width: 22px; height: 22px; border-radius: 50%; color: #fff; font-size: 10px; display: inline-grid; place-items: center; }
 .base, .cc { color: var(--text-3); font-size: 12px; }
 .restore-tag { font-size: 11px; padding: 1px 9px; border-radius: 999px; background: #e0e7ff; color: #4338ca; font-weight: 600; }
+.fresh-tag { font-size: 11px; padding: 1px 9px; border-radius: 999px; background: #cffafe; color: #0e7490; font-weight: 600; }
 .restore-result { margin-top: 8px; font-size: 12px; color: #3730a3; background: #eef2ff; border: 1px solid #c7d2fe; border-radius: 8px; padding: 6px 12px; }
 .decided { font-size: 12px; color: var(--text-3); }
 .dnote { margin-top: 8px; font-size: 13px; color: var(--text-2); background: var(--panel-2); border-radius: 8px; padding: 8px 12px; }

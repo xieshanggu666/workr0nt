@@ -6,15 +6,18 @@ import { useAuthStore } from '@/stores/auth'
 import { useEngagementStore } from '@/stores/engagement'
 import { useReviewStore } from '@/stores/review'
 import { useAccessStore } from '@/stores/access'
+import { useFreshnessStore } from '@/stores/freshness'
 import DocPill from '@/components/common/DocPill.vue'
 import MemberSelect from '@/components/common/MemberSelect.vue'
 import ShareDialog from '@/components/doc/ShareDialog.vue'
 import ReviewPanel from '@/components/doc/ReviewPanel.vue'
+import FreshnessPanel from '@/components/doc/FreshnessPanel.vue'
 import AccessApplyCard from '@/components/doc/AccessApplyCard.vue'
 import AccessPanel from '@/components/doc/AccessPanel.vue'
 import { formatFull, formatDate, avatarColor } from '@/utils/format'
 import { canEditDoc, canDeleteDoc, canViewDoc, GUEST_ID } from '@/utils/permission'
 import { versionReviewBadge, versionRestoreBadges, canSubmitReview } from '@/utils/review'
+import { freshVersionBadge } from '@/utils/freshness'
 import { diffVersionFields, diffBodyLines, docSnapshot, fieldLabels, versionRangeText } from '@/utils/version'
 import { ACCESS, accessPermLabel, grantExpireText } from '@/utils/access'
 
@@ -25,6 +28,7 @@ const auth = useAuthStore()
 const engagement = useEngagementStore()
 const reviewStore = useReviewStore()
 const accessStore = useAccessStore()
+const freshnessStore = useFreshnessStore()
 
 const doc = ref(null)
 const notFound = ref(false)
@@ -36,6 +40,8 @@ const shareOpen = ref(false)
 const mergeNotice = ref('')
 // 已提交评审的提示（由编辑器「提交评审」跳转携带）
 const reviewSubmittedNotice = ref('')
+// 已提交保鲜复核的提示（由编辑器「保鲜整改」跳转携带）
+const freshSubmittedNotice = ref('')
 
 const docId = computed(() => route.params.id)
 // 兼容旧数据：早期文档可能没有 versions 字段
@@ -61,6 +67,8 @@ const compareLines = computed(() =>
 const restoreTarget = computed(() => versionList.value.find((v) => v.version === restoreVersion.value) || null)
 // 当前流转中的评审单（恢复按钮与发起资格均据此判定）
 const pendingReview = computed(() => (doc.value ? reviewStore.pendingReviewOf(doc.value.id) : null))
+// 知识保鲜：当前流转中的复核单（存在即代表问答引用已暂停）
+const freshTicket = computed(() => (doc.value ? freshnessStore.activeTicketOf(doc.value.id) : null))
 // 当前用户在该文档上的有效限时协作授权（发起恢复评审需文档级写入资格）
 const restoreGrant = computed(() => (doc.value ? accessStore.grantOf(doc.value.id, auth.user?.id) : null))
 // 恢复预览：fromV 之后到当前的所有版本将被回滚并标记边界
@@ -120,7 +128,7 @@ async function submitRestore() {
 
 async function refresh() {
   if (!docId.value) return
-  await Promise.all([reviewStore.loadAll(), accessStore.loadAll()])
+  await Promise.all([reviewStore.loadAll(), accessStore.loadAll(), freshnessStore.loadAll()])
   const d = await kb.getDoc(docId.value)
   if (!d) { notFound.value = true; doc.value = null; return }
   notFound.value = false
@@ -182,6 +190,7 @@ function renderMention(content) {
 onMounted(() => {
   mergeNotice.value = route.query.merged || ''
   reviewSubmittedNotice.value = route.query.reviewSubmitted || ''
+  freshSubmittedNotice.value = route.query.freshSubmitted || ''
   refresh()
 })
 watch(docId, () => { if (route.name === 'docDetail') { refresh(); showVersions.value = false } })
@@ -203,8 +212,15 @@ watch(docId, () => { if (route.name === 'docDetail') { refresh(); showVersions.v
         <span>✅ 已提交评审：文档进入「评审中」，成员可发表意见，管理员审批通过后修改才会发布。</span>
         <button class="btn sm ghost" @click="reviewSubmittedNotice = ''">知道了</button>
       </div>
+      <div v-if="freshSubmittedNotice" class="card fresh-submitted-note">
+        <span>🧊 已提交保鲜复核：管理员复核通过后修订生效、问答引用恢复并重新计算复核周期；驳回则继续整改。</span>
+        <button class="btn sm ghost" @click="freshSubmittedNotice = ''">知道了</button>
+      </div>
       <div v-if="reviewLocked" class="card review-lock">
         <span>⏳ 该文档正在评审中（{{ userById[pendingReview.submittedBy]?.name }} 发起）：当前展示的是评审前版本，正文已锁定，审批通过后更新。</span>
+      </div>
+      <div v-if="freshTicket" class="card fresh-banner">
+        <span>🧊 知识保鲜：本文档已超过复核周期（第 {{ freshTicket.round }} 轮，{{ freshTicket.status === 'submitted' ? '复核送审中' : freshTicket.status === 'rejected' ? '已驳回待整改' : '待整改' }}），问答引用已暂停；复核通过后自动恢复引用并重算周期。</span>
       </div>
       <div v-if="activeGrant" class="card grant-banner">
         <span>🔑 你正以「{{ accessPermLabel(activeGrant.grant.permission) }}」授权访问本文档，{{ grantExpireText(activeGrant) }}；到期或被撤销后访问权限将自动收回。</span>
@@ -239,6 +255,7 @@ watch(docId, () => { if (route.name === 'docDetail') { refresh(); showVersions.v
           <div class="vmain">
             <span class="vnote">{{ v.note || '编辑' }}</span>
             <span v-if="versionReviewBadge(v)" class="vbadge" :class="'vb-' + versionReviewBadge(v).cls">{{ versionReviewBadge(v).text }}</span>
+            <span v-if="freshVersionBadge(v)" class="vbadge vb-fresh">{{ freshVersionBadge(v).text }}</span>
             <span v-for="b in versionRestoreBadges(v)" :key="b.text" class="vbadge" :class="'vb-' + b.cls">{{ b.text }}</span>
             <span v-if="!v.snapshot" class="vnosnap" title="旧版本记录未保存内容快照，无法对比或恢复">无快照</span>
           </div>
@@ -296,6 +313,8 @@ watch(docId, () => { if (route.name === 'docDetail') { refresh(); showVersions.v
       </div>
 
       <ReviewPanel :doc="doc" />
+
+      <FreshnessPanel :doc="doc" />
 
       <!-- 拥有者/管理员：审批访问申请、管理限时授权（撤销到期同步收回四处权限） -->
       <AccessPanel v-if="isOwnerOrAdmin" :doc="doc" />
@@ -406,11 +425,14 @@ watch(docId, () => { if (route.name === 'docDetail') { refresh(); showVersions.v
 .c-input > div { flex: 1; }
 .versions a.at, .c-content :deep(a.at) { color: var(--primary); font-weight: 500; }
 .review-lock { padding: 10px 18px; margin-bottom: 14px; font-size: 13px; color: #b45309; background: #fffbeb; border-color: #f59e0b; }
+.fresh-banner { padding: 10px 18px; margin-bottom: 14px; font-size: 13px; color: #155e75; background: #ecfeff; border-color: #22d3ee; }
 .grant-banner { padding: 10px 18px; margin-bottom: 14px; font-size: 13px; color: #6d28d9; background: #faf5ff; border-color: #a855f7; }
 .review-submitted-note { padding: 10px 20px; margin-bottom: 14px; display: flex; justify-content: space-between; align-items: center; gap: 12px; font-size: 13px; color: #15803d; background: #f0fdf4; border-color: #16a34a; }
+.fresh-submitted-note { padding: 10px 20px; margin-bottom: 14px; display: flex; justify-content: space-between; align-items: center; gap: 12px; font-size: 13px; color: #155e75; background: #ecfeff; border-color: #22d3ee; }
 .vbadge { font-size: 11px; padding: 1px 8px; border-radius: 999px; }
 .vb-ok { background: #dcfce7; color: #15803d; }
 .vb-no { background: #fee2e2; color: #b91c1c; }
 .vb-wait { background: #fef3c7; color: #b45309; }
+.vb-fresh { background: #cffafe; color: #0e7490; }
 .c-review-tag { font-size: 10px; padding: 1px 7px; border-radius: 999px; background: var(--primary-weak); color: var(--primary); }
 </style>

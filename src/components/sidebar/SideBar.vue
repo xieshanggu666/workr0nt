@@ -7,6 +7,7 @@ import { useEngagementStore } from '@/stores/engagement'
 import { useReviewStore } from '@/stores/review'
 import { useGapStore } from '@/stores/gap'
 import { useAccessStore } from '@/stores/access'
+import { useFreshnessStore } from '@/stores/freshness'
 import { canEditContent, canViewDoc, roleLabel } from '@/utils/permission'
 import { avatarColor } from '@/utils/format'
 
@@ -18,6 +19,7 @@ const engagement = useEngagementStore()
 const reviewStore = useReviewStore()
 const gapStore = useGapStore()
 const accessStore = useAccessStore()
+const freshnessStore = useFreshnessStore()
 
 // 侧栏各文档列表统一过权限：授权撤销/到期后标题也不再从最近浏览/收藏/协作入口泄露
 function visible(d) {
@@ -72,6 +74,9 @@ function goDoc(id) {
       </div>
       <div class="link" :class="{ on: route.name === 'accessCenter' }" @click="go('/access', {})">
         🔑 访问授权<span v-if="accessPending" class="link-badge">{{ accessPending }}</span>
+      </div>
+      <div class="link" :class="{ on: route.name === 'freshnessCenter' }" @click="go('/freshness', {})">
+        🧊 知识保鲜<span v-if="freshnessStore.pausedCount" class="link-badge fresh-badge">{{ freshnessStore.pausedCount }}</span>
       </div>
       <div class="link" :class="{ on: route.name === 'profile' }" @click="go('/profile', {})">⚙️ 账号与权限</div>
     </nav>
@@ -141,6 +146,7 @@ function goDoc(id) {
 .link.on { background: var(--primary-weak); color: var(--primary); }
 .link { position: relative; }
 .link-badge { margin-left: 6px; background: var(--danger); color: #fff; font-size: 11px; border-radius: 999px; padding: 0 7px; min-width: 18px; height: 16px; display: inline-grid; place-items: center; }
+.link-badge.fresh-badge { background: #0e7490; }
 
 .section { margin: 4px 0 14px; }
 .section-title { font-size: 12px; color: var(--text-3); padding: 0 12px; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px; }

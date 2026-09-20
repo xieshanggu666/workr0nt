@@ -7,8 +7,10 @@ import { REVIEW, PUBLISH, buildTimelineEntry, canSubmitReview, canReviewDecision
 import { GAP } from '@/utils/gap'
 import { canEditContent, GUEST_ID } from '@/utils/permission'
 import { isGrantActive, ACCESS_PERM } from '@/utils/access'
+import { isFreshReview, isFreshNoChangeReview } from '@/utils/review'
 import { useKbStore } from './kb'
 import { useGapStore } from './gap'
+import { useFreshnessStore } from './freshness'
 
 // 知识文档评审流程 store：
 // 发起（快照待审内容、文档置为评审中并锁定）→ 成员发表评审意见 →
@@ -373,7 +375,7 @@ export const useReviewStore = defineStore('review', () => {
     const userId = currentUser?.id || GUEST_ID
     let result = { status: 'error' }
 
-    await db.transaction('rw', db.docs, db.reviews, db.gapTickets, async () => {
+    await db.transaction('rw', db.docs, db.reviews, db.gapTickets, db.freshnessTickets, async () => {
       const review = await db.reviews.get(reviewId)
       if (!review) { result = { status: 'missing' }; return }
       if (review.status !== REVIEW.PENDING) { result = { status: 'closed', review }; return }
@@ -427,6 +429,28 @@ export const useReviewStore = defineStore('review', () => {
           newVersions = [...applyRestoreBoundary(versions, fromV, nextVersion, now), versionEntry]
           // 评审单同步记录恢复结果，供评审中心/历史留痕直接展示
           decided.restoreResult = { rolledBack, rolledBackConcurrent }
+        } else if (isFreshReview(review)) {
+          // 知识保鲜复核通过：
+          // - 修订送审（非 noChange）→ 回写修订快照，追加「保鲜复核通过」版本；
+          // - 确认无需修订（noChange）→ 正文不回写不产生内容版本，仅恢复引用并重算周期。
+          const freshRound = review.freshRound
+          if (isFreshNoChangeReview(review)) {
+            newVersions = versions
+            decided.freshNoChange = true
+          } else {
+            versionEntry = {
+              version: nextVersion,
+              savedAt: now,
+              savedBy: review.submittedBy,
+              note: '知识保鲜复核通过后发布（第 ' + freshRound + ' 轮复核）' + (note ? '：' + note : ''),
+              reviewStatus: REVIEW.APPROVED,
+              reviewId,
+              decidedBy: userId,
+              freshReview: { round: freshRound, reviewId, noChange: false },
+              snapshot: { ...review.snapshot }
+            }
+            newVersions = [...versions, versionEntry]
+          }
         } else {
           versionEntry = {
             version: nextVersion,
@@ -440,14 +464,17 @@ export const useReviewStore = defineStore('review', () => {
           }
           newVersions = [...versions, versionEntry]
         }
+        const fresh = isFreshReview(review)
+        const noChangeFresh = isFreshNoChangeReview(review)
         const updated = {
           ...doc,
-          ...review.snapshot,
-          visibility: review.snapshot.visibility,
+          // 保鲜「确认无需修订」不回写快照，仅解除锁定；其余通过按快照回写
+          ...(fresh && noChangeFresh ? {} : review.snapshot),
+          visibility: fresh && noChangeFresh ? doc.visibility : review.snapshot.visibility,
           publishState: PUBLISH.PUBLISHED,
           activeReviewId: null,
           updatedAt: now,
-          lastReview: { reviewId, status, by: userId, at: now, note: note || '', version: nextVersion },
+          lastReview: { reviewId, status, by: userId, at: now, note: note || '', ...(newVersions.length ? { version: newVersions.length } : {}) },
           versions: newVersions
         }
         await db.docs.put(updated)
@@ -463,11 +490,16 @@ export const useReviewStore = defineStore('review', () => {
       await db.reviews.put(decided)
       // 缺口工单联动：通过回填答案来源 / 驳回退回处理（同事务，状态不会脱节）
       await syncGapTicket(reviewId, status === REVIEW.APPROVED ? 'resolve' : 'return', note, userId, now)
+      // 知识保鲜联动：通过恢复引用并重算周期 / 驳回回到待整改继续整改（同事务）
+      if (isFreshReview(review)) {
+        await useFreshnessStore().syncFreshTicket(review, status === REVIEW.APPROVED ? 'approve' : 'reject', note, userId, now)
+      }
       result = { status: 'ok', review: decided, approved: status === REVIEW.APPROVED }
     })
 
     const gap = useGapStore()
-    await Promise.all([reload(), kb.reloadDocs(), gap.reload()])
+    const freshness = useFreshnessStore()
+    await Promise.all([reload(), kb.reloadDocs(), gap.reload(), freshness.loaded ? freshness.reload() : Promise.resolve()])
     return result
   }
 
@@ -479,7 +511,7 @@ export const useReviewStore = defineStore('review', () => {
     const userId = currentUser?.id || GUEST_ID
     let result = { status: 'error' }
 
-    await db.transaction('rw', db.docs, db.reviews, db.gapTickets, async () => {
+    await db.transaction('rw', db.docs, db.reviews, db.gapTickets, db.freshnessTickets, async () => {
       const review = await db.reviews.get(reviewId)
       if (!review) { result = { status: 'missing' }; return }
       if (userId === GUEST_ID) { result = { status: 'guest' }; return }
@@ -493,11 +525,16 @@ export const useReviewStore = defineStore('review', () => {
       await db.docs.update(review.docId, { publishState: PUBLISH.PUBLISHED, activeReviewId: null })
       // 缺口工单联动：撤回送审，工单退回处理中
       await syncGapTicket(reviewId, 'withdraw', '', userId, now)
+      // 保鲜复核撤回：复核单回到待整改（问答引用继续暂停），修订后可重新送审
+      if (isFreshReview(review)) {
+        await useFreshnessStore().syncFreshTicket(review, 'withdraw', '', userId, now)
+      }
       result = { status: 'ok', review: withdrawn }
     })
 
     const gap = useGapStore()
-    await Promise.all([reload(), kb.reloadDocs(), gap.reload()])
+    const freshness = useFreshnessStore()
+    await Promise.all([reload(), kb.reloadDocs(), gap.reload(), freshness.loaded ? freshness.reload() : Promise.resolve()])
     return result
   }
 
