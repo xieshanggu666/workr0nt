@@ -5,6 +5,7 @@ import { useKbStore } from '@/stores/kb'
 import { useAuthStore } from '@/stores/auth'
 import { useReviewStore } from '@/stores/review'
 import { useAccessStore } from '@/stores/access'
+import { useFreshStore } from '@/stores/fresh'
 import RichEditor from '@/components/doc/RichEditor.vue'
 import { docVersion, fieldLabels } from '@/utils/version'
 import { canEditDoc, ROLE, GUEST_ID } from '@/utils/permission'
@@ -15,6 +16,7 @@ const kb = useKbStore()
 const auth = useAuthStore()
 const reviewStore = useReviewStore()
 const accessStore = useAccessStore()
+const freshStore = useFreshStore()
 
 const isEdit = computed(() => route.params.id && route.params.id !== 'new')
 const editingDoc = ref(null)
@@ -189,6 +191,8 @@ async function load() {
     const active = reviewStore.pendingReviewOf(route.params.id)
     activeReview.value = active
     lockedByReview.value = !!active && auth.user?.role !== ROLE.ADMIN
+    // 知识保鲜：加载复核单，待整改时在评审模式下提示本次提交将自动关联
+    await freshStore.loadAll()
     // 编辑权限：拥有者/固定协作成员/持有效限时协作授权；授权撤销或到期后进入即被收回
     await accessStore.loadAll()
     activeGrant.value = d ? accessStore.grantOf(d.id, auth.user?.id) : null
@@ -243,6 +247,8 @@ const isGrantOnly = computed(() => {
 })
 // 可编辑：未被评审锁定、未被授权收回
 const editableNow = computed(() => !lockedByReview.value && !accessDenied.value)
+// 本文档待整改的复核单：评审模式下提示提交将自动关联该轮复核
+const freshTicket = computed(() => (isEdit.value ? freshStore.activeTicketOf(route.params.id) : null))
 </script>
 
 <template>
@@ -342,6 +348,7 @@ const editableNow = computed(() => !lockedByReview.value && !accessDenied.value)
         <label class="rv-label">评审说明</label>
         <textarea v-model="reviewNote" rows="2" placeholder="向管理员说明本次修改要点（会作为首条评审意见留痕，可选）"></textarea>
         <div class="rv-hint">提交后文档进入「评审中」并锁定当前正文，审批通过后以上内容与可见性才会生效。</div>
+        <div v-if="freshTicket" class="rv-hint fresh-hint">🧊 本文档第 {{ freshTicket.round }} 轮复核待整改：本次评审将自动关联复核单，管理员批准后恢复问答引用并重算周期。</div>
       </div>
     </div>
 
@@ -385,6 +392,7 @@ const editableNow = computed(() => !lockedByReview.value && !accessDenied.value)
 .field textarea { width: 100%; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px 10px; font-size: 13px; resize: vertical; outline: none; }
 .field textarea:focus { border-color: var(--primary); }
 .rv-hint { font-size: 12px; color: var(--warn); }
+.rv-hint.fresh-hint { color: #0e7490; }
 .lock-bar { padding: 16px 22px; margin-bottom: 14px; border-color: #f59e0b; background: #fffbeb; }
 .lock-head { font-weight: 600; color: #b45309; margin-bottom: 6px; }
 .lock-desc { font-size: 13px; color: var(--text-2); margin-bottom: 10px; }

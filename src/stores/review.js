@@ -5,10 +5,12 @@ import { uid } from '@/utils/format'
 import { ensureVersions, docSnapshot, diffVersionFields, applyRestoreBoundary, restoreRollbackInfo } from '@/utils/version'
 import { REVIEW, PUBLISH, buildTimelineEntry, canSubmitReview, canReviewDecision } from '@/utils/review'
 import { GAP } from '@/utils/gap'
+import { FRESH, calcNextDue } from '@/utils/fresh'
 import { canEditContent, GUEST_ID } from '@/utils/permission'
 import { isGrantActive, ACCESS_PERM } from '@/utils/access'
 import { useKbStore } from './kb'
 import { useGapStore } from './gap'
+import { useFreshStore } from './fresh'
 
 // 知识文档评审流程 store：
 // 发起（快照待审内容、文档置为评审中并锁定）→ 成员发表评审意见 →
@@ -69,6 +71,51 @@ export const useReviewStore = defineStore('review', () => {
       .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt))
   }
 
+  // 复核单联动（建单侧）：文档有待整改复核单时，新评审单自动承接该轮复核——
+  // 复核单转为送审中并关联评审单，评审单标记复核轮次，二者在同一事务内建立，
+  // 审批结论由 syncFreshTicket 统一联动，不会出现「评审已完结但复核单未关联」的脱节。
+  async function linkOpenFreshTicket(docId, review, userId, now) {
+    const ticket = await db.freshTickets
+      .where('docId').equals(docId)
+      .filter((t) => t.status === FRESH.OPEN).first()
+    if (!ticket) return null
+    review.freshTicketId = ticket.id
+    review.freshRound = ticket.round
+    await db.freshTickets.update(ticket.id, {
+      status: FRESH.IN_REVIEW,
+      reviewId: review.id,
+      timeline: [...(ticket.timeline || []), buildTimelineEntry('submit', userId, '修订送审，关联评审单（第 ' + ticket.round + ' 轮复核）', now)]
+    })
+    return ticket
+  }
+
+  // 复核单联动（审批侧）：通过 → 已复核（恢复引用、重算周期随文档回写完成）；
+  // 驳回/撤回 → 退回待整改，问答引用保持暂停。须在评审决策的同一事务内调用。
+  // 仅联动「送审中」的复核单：清除周期等并发操作已取消的单子不再回写
+  async function syncFreshTicket(reviewId, action, note, userId, now) {
+    const linked = await db.freshTickets.where('reviewId').equals(reviewId).toArray()
+    const tickets = linked.filter((t) => t.status === FRESH.IN_REVIEW)
+    for (const t of tickets) {
+      if (action === 'resolve') {
+        await db.freshTickets.update(t.id, {
+          status: FRESH.RESOLVED,
+          resolvedAt: now,
+          resolvedBy: userId,
+          timeline: [...(t.timeline || []), buildTimelineEntry('resolve', userId, '复核通过，恢复问答引用并重算周期' + (note ? '：' + note : ''), now)]
+        })
+      } else {
+        const reason = action === 'return'
+          ? '复核驳回' + (note ? '：' + note : '') + '，继续整改'
+          : '评审已撤回，复核单退回待整改'
+        await db.freshTickets.update(t.id, {
+          status: FRESH.OPEN,
+          reviewId: null,
+          timeline: [...(t.timeline || []), buildTimelineEntry('return', userId, reason, now)]
+        })
+      }
+    }
+  }
+
   // 构造待审批评审单：snapshot 为本次提交待审批的字段快照，审批通过时据此回写，保证「先审后发」
   function buildReviewRecord(docId, patch, note, userId, now, baseVersion) {
     return {
@@ -106,7 +153,7 @@ export const useReviewStore = defineStore('review', () => {
     const role = currentUser?.role || null
     let result = { status: 'error' }
 
-    await db.transaction('rw', db.docs, db.reviews, db.comments, db.accessRequests, async () => {
+    await db.transaction('rw', db.docs, db.reviews, db.comments, db.accessRequests, db.freshTickets, async () => {
       const doc = await db.docs.get(docId)
       if (!doc) { result = { status: 'missing' }; return }
       const existingPending = await db.reviews
@@ -119,6 +166,8 @@ export const useReviewStore = defineStore('review', () => {
       if (existingPending) { result = { status: 'duplicate', review: existingPending }; return }
 
       const review = buildReviewRecord(docId, patch, note, userId, now, ensureVersions(doc, now).length)
+      // 文档有待整改复核单时，本次评审自动承接该轮复核（同事务关联，审批结论联动）
+      await linkOpenFreshTicket(docId, review, userId, now)
       await db.reviews.add(review)
 
       // 文档进入评审中：正文锁定，旧内容继续可见，待审批内容不提前泄露
@@ -152,7 +201,7 @@ export const useReviewStore = defineStore('review', () => {
     const role = currentUser?.role || null
     let result = { status: 'error' }
 
-    await db.transaction('rw', db.docs, db.reviews, db.comments, db.accessRequests, async () => {
+    await db.transaction('rw', db.docs, db.reviews, db.comments, db.accessRequests, db.freshTickets, async () => {
       const doc = await db.docs.get(docId)
       if (!doc) { result = { status: 'missing' }; return }
       const existingPending = await db.reviews
@@ -188,6 +237,8 @@ export const useReviewStore = defineStore('review', () => {
         decisionNote: '',
         timeline: [buildTimelineEntry('restore-submit', userId, note || ('申请恢复至 v' + target.version), now)]
       }
+      // 文档有待整改复核单时，本次恢复评审自动承接该轮复核（同事务关联）
+      await linkOpenFreshTicket(docId, review, userId, now)
       await db.reviews.add(review)
 
       // 文档进入评审中：正文锁定，旧内容继续可见，恢复内容不提前泄露
@@ -224,7 +275,7 @@ export const useReviewStore = defineStore('review', () => {
     let submittedComment = null
 
     try {
-      await db.transaction('rw', db.docs, db.reviews, db.comments, db.gapTickets, db.accessRequests, async () => {
+      await db.transaction('rw', db.docs, db.reviews, db.comments, db.gapTickets, db.accessRequests, db.freshTickets, async () => {
         // 缺口送审属于内容发布：访客/只读角色在入口即拒绝，防止直接调用 store 锁文档/建工单
         if (userId === GUEST_ID || !canEditContent(currentUser?.role)) { result = { status: 'guest' }; return }
         const ticket = await db.gapTickets.get(ticketId)
@@ -258,6 +309,8 @@ export const useReviewStore = defineStore('review', () => {
         }
 
         const review = buildReviewRecord(docId, patch, note, userId, now, ensureVersions(doc, now).length)
+        // 文档有待整改复核单时，本次缺口送审自动承接该轮复核（同事务关联）
+        await linkOpenFreshTicket(docId, review, userId, now)
         await db.reviews.add(review)
 
         // 文档进入评审中：正文锁定，旧内容继续可见，待审批内容不提前泄露
@@ -373,7 +426,7 @@ export const useReviewStore = defineStore('review', () => {
     const userId = currentUser?.id || GUEST_ID
     let result = { status: 'error' }
 
-    await db.transaction('rw', db.docs, db.reviews, db.gapTickets, async () => {
+    await db.transaction('rw', db.docs, db.reviews, db.gapTickets, db.freshTickets, async () => {
       const review = await db.reviews.get(reviewId)
       if (!review) { result = { status: 'missing' }; return }
       if (review.status !== REVIEW.PENDING) { result = { status: 'closed', review }; return }
@@ -386,6 +439,11 @@ export const useReviewStore = defineStore('review', () => {
 
       const doc = await db.docs.get(review.docId)
       if (!doc) { result = { status: 'doc-missing' }; return }
+
+      // 关联的送审中复核单：通过时据此重算保鲜周期、给版本记录打上复核轮次标记
+      const linkedFresh = await db.freshTickets
+        .where('reviewId').equals(reviewId)
+        .filter((t) => t.status === FRESH.IN_REVIEW).first()
 
       const status = decision === 'approve' ? REVIEW.APPROVED : REVIEW.REJECTED
       const timeline = [
@@ -421,6 +479,8 @@ export const useReviewStore = defineStore('review', () => {
             reviewId,
             decidedBy: userId,
             restore: { fromVersion: fromV, rolledBack, rolledBackConcurrent, reviewId, decidedBy: userId },
+            // 复核送审的恢复评审：版本记录同样打上复核轮次标记
+            ...(linkedFresh ? { freshness: { ticketId: linkedFresh.id, round: linkedFresh.round } } : {}),
             snapshot: { ...review.snapshot }
           }
           // 旧记录重标边界：fromV 之后的版本被回滚（supersededBy），之前的恢复生效
@@ -432,10 +492,12 @@ export const useReviewStore = defineStore('review', () => {
             version: nextVersion,
             savedAt: now,
             savedBy: review.submittedBy,
-            note: '评审通过后发布' + (note ? '：' + note : ''),
+            note: (linkedFresh ? '第 ' + linkedFresh.round + ' 轮复核通过后发布' : '评审通过后发布') + (note ? '：' + note : ''),
             reviewStatus: REVIEW.APPROVED,
             reviewId,
             decidedBy: userId,
+            // 复核轮次标记：版本历史可直接追溯该版本属于哪一轮复核
+            ...(linkedFresh ? { freshness: { ticketId: linkedFresh.id, round: linkedFresh.round } } : {}),
             snapshot: { ...review.snapshot }
           }
           newVersions = [...versions, versionEntry]
@@ -448,6 +510,10 @@ export const useReviewStore = defineStore('review', () => {
           activeReviewId: null,
           updatedAt: now,
           lastReview: { reviewId, status, by: userId, at: now, note: note || '', version: nextVersion },
+          // 复核通过：恢复问答引用并以审批时间为新起点重算周期（未关联复核单则保持原状）
+          ...(linkedFresh && doc.freshness?.cycleDays
+            ? { freshness: { ...doc.freshness, paused: false, lastReviewedAt: now, nextDueAt: calcNextDue(doc.freshness.cycleDays, now) } }
+            : {}),
           versions: newVersions
         }
         await db.docs.put(updated)
@@ -463,11 +529,14 @@ export const useReviewStore = defineStore('review', () => {
       await db.reviews.put(decided)
       // 缺口工单联动：通过回填答案来源 / 驳回退回处理（同事务，状态不会脱节）
       await syncGapTicket(reviewId, status === REVIEW.APPROVED ? 'resolve' : 'return', note, userId, now)
+      // 复核单联动：通过恢复引用并重算周期 / 驳回退回待整改（同事务）
+      await syncFreshTicket(reviewId, status === REVIEW.APPROVED ? 'resolve' : 'return', note, userId, now)
       result = { status: 'ok', review: decided, approved: status === REVIEW.APPROVED }
     })
 
     const gap = useGapStore()
-    await Promise.all([reload(), kb.reloadDocs(), gap.reload()])
+    const fresh = useFreshStore()
+    await Promise.all([reload(), kb.reloadDocs(), gap.reload(), fresh.reload()])
     return result
   }
 
@@ -479,7 +548,7 @@ export const useReviewStore = defineStore('review', () => {
     const userId = currentUser?.id || GUEST_ID
     let result = { status: 'error' }
 
-    await db.transaction('rw', db.docs, db.reviews, db.gapTickets, async () => {
+    await db.transaction('rw', db.docs, db.reviews, db.gapTickets, db.freshTickets, async () => {
       const review = await db.reviews.get(reviewId)
       if (!review) { result = { status: 'missing' }; return }
       if (userId === GUEST_ID) { result = { status: 'guest' }; return }
@@ -493,11 +562,14 @@ export const useReviewStore = defineStore('review', () => {
       await db.docs.update(review.docId, { publishState: PUBLISH.PUBLISHED, activeReviewId: null })
       // 缺口工单联动：撤回送审，工单退回处理中
       await syncGapTicket(reviewId, 'withdraw', '', userId, now)
+      // 复核单联动：撤回送审，复核单退回待整改（引用保持暂停）
+      await syncFreshTicket(reviewId, 'withdraw', '', userId, now)
       result = { status: 'ok', review: withdrawn }
     })
 
     const gap = useGapStore()
-    await Promise.all([reload(), kb.reloadDocs(), gap.reload()])
+    const fresh = useFreshStore()
+    await Promise.all([reload(), kb.reloadDocs(), gap.reload(), fresh.reload()])
     return result
   }
 

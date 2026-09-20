@@ -11,6 +11,7 @@ const routes = [
   { path: '/docs/:id/edit', name: 'docEdit', component: () => import('@/views/DocEditor.vue'), meta: { title: '编辑文档' } },
   { path: '/search', name: 'search', component: () => import('@/views/SearchResults.vue'), meta: { title: '搜索' } },
   { path: '/reviews', name: 'reviewCenter', component: () => import('@/views/ReviewCenter.vue'), meta: { title: '评审中心' } },
+  { path: '/freshness', name: 'freshCenter', component: () => import('@/views/FreshCenter.vue'), meta: { title: '知识保鲜' } },
   { path: '/gaps', name: 'gapTickets', component: () => import('@/views/GapTickets.vue'), meta: { title: '缺口工单' } },
   { path: '/access', name: 'accessCenter', component: () => import('@/views/AccessCenter.vue'), meta: { title: '访问授权' } },
   { path: '/qa', name: 'qa', component: () => import('@/views/QAAssistant.vue'), meta: { title: '智能问答' } },

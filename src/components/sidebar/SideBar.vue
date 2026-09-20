@@ -7,6 +7,7 @@ import { useEngagementStore } from '@/stores/engagement'
 import { useReviewStore } from '@/stores/review'
 import { useGapStore } from '@/stores/gap'
 import { useAccessStore } from '@/stores/access'
+import { useFreshStore } from '@/stores/fresh'
 import { canEditContent, canViewDoc, roleLabel } from '@/utils/permission'
 import { avatarColor } from '@/utils/format'
 
@@ -18,6 +19,7 @@ const engagement = useEngagementStore()
 const reviewStore = useReviewStore()
 const gapStore = useGapStore()
 const accessStore = useAccessStore()
+const freshStore = useFreshStore()
 
 // 侧栏各文档列表统一过权限：授权撤销/到期后标题也不再从最近浏览/收藏/协作入口泄露
 function visible(d) {
@@ -66,6 +68,9 @@ function goDoc(id) {
       <div class="link" :class="{ on: route.name === 'search' }" @click="go('/search', {})">🔍 全局搜索</div>
       <div class="link" :class="{ on: route.name === 'reviewCenter' }" @click="go('/reviews', {})">
         🧾 评审中心<span v-if="reviewStore.pendingCount" class="link-badge">{{ reviewStore.pendingCount }}</span>
+      </div>
+      <div class="link" :class="{ on: route.name === 'freshCenter' }" @click="go('/freshness', {})">
+        🧊 知识保鲜<span v-if="freshStore.openCount" class="link-badge">{{ freshStore.openCount }}</span>
       </div>
       <div class="link" :class="{ on: route.name === 'gapTickets' }" @click="go('/gaps', {})">
         📮 缺口工单<span v-if="gapStore.openCount" class="link-badge">{{ gapStore.openCount }}</span>

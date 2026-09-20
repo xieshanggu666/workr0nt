@@ -369,8 +369,9 @@ const seedReview5 = {
 
 // 种子版本：v1 基础数据；v2 缺口工单演示数据（含 rev-4 评审留痕与 doc-3 审批回写）；
 // v3 文档访问申请演示数据（doc-9 保密文档上的限时阅读/协作授权、撤销与到期留痕）；
-// v4 版本快照回填与 doc-2 恢复演示（v2 误删 + rev-5 恢复评审通过 + v3 恢复边界标记）
-const SEED_VER = '4'
+// v4 版本快照回填与 doc-2 恢复演示（v2 误删 + rev-5 恢复评审通过 + v3 恢复边界标记）；
+// v5 知识保鲜演示（doc-6 到期暂停引用、doc-3 保鲜中、doc-8 第 1 轮复核已完成并留版本标记）
+const SEED_VER = '5'
 
 async function isSeeded() {
   return (await getMeta('seeded')) === SEED_VER
@@ -523,9 +524,78 @@ async function ensureRestoreSeed() {
   }
 }
 
+// ---- 知识保鲜演示数据（v5 增量种子）----
+// doc-6：复核周期 7 天、上次复核 8 天前 → 已到期，首次加载时由扫描自动生成第 1 轮复核单并暂停问答引用
+// doc-3：复核周期 30 天、上次复核 9 天前 → 保鲜中，21 天后到期
+// doc-8：第 1 轮复核已完成（rev-6 审批通过，版本 v2 带复核轮次标记），当前周期约 3 天后到期
+const seedReview6 = {
+  id: 'rev-6', docId: 'doc-8', status: 'approved',
+  submittedBy: 'u-chen', submittedAt: ago(5 * d),
+  snapshot: {
+    title: '企业安全基线要求',
+    body: '<h2>密码与会话策略</h2><ul><li>强制启用两步验证</li><li>会话 14 天过期，支持强制下线</li><li>敏感操作需二次确认</li></ul><p>详见 <i>安全响应手册</i> 相关章节。</p>',
+    categoryId: 'c-dev', tagIds: ['t-security'], visibility: 'team'
+  },
+  baseVersion: 1,
+  decidedBy: 'u-admin', decidedAt: ago(4 * d + 2 * h), decisionNote: '确认内容仍然有效，复核通过。',
+  freshTicketId: 'fresh-1', freshRound: 1,
+  timeline: [
+    { action: 'submit', by: 'u-chen', at: ago(5 * d), note: '第 1 轮复核：确认密码与会话策略仍符合现状，无需修改。' },
+    { action: 'approve', by: 'u-admin', at: ago(4 * d + 2 * h), note: '确认内容仍然有效，复核通过。' }
+  ]
+}
+
+const seedFreshTickets = [
+  {
+    id: 'fresh-1', docId: 'doc-8', round: 1, status: 'resolved',
+    reviewId: 'rev-6',
+    dueAt: ago(6 * d), createdAt: ago(6 * d),
+    resolvedAt: ago(4 * d + 2 * h), resolvedBy: 'u-admin',
+    timeline: [
+      { action: 'expire', by: 'system', at: ago(6 * d), note: '复核周期到期（周期 7 天），自动生成复核单并暂停问答引用' },
+      { action: 'submit', by: 'u-chen', at: ago(5 * d), note: '修订送审，关联评审单（第 1 轮复核）' },
+      { action: 'resolve', by: 'u-admin', at: ago(4 * d + 2 * h), note: '复核通过，恢复问答引用并重算周期：确认内容仍然有效，复核通过。' }
+    ]
+  }
+]
+
+// v5 增量种子：复核周期与每轮复核留痕。老库升级时补充，全新安装在基础种子后顺带执行
+async function ensureFreshSeed() {
+  const doc6 = await db.docs.get('doc-6')
+  if (doc6 && !doc6.freshness) {
+    await db.docs.update('doc-6', {
+      freshness: { cycleDays: 7, lastReviewedAt: ago(8 * d), nextDueAt: ago(1 * d), paused: false }
+    })
+  }
+  const doc3 = await db.docs.get('doc-3')
+  if (doc3 && !doc3.freshness) {
+    await db.docs.update('doc-3', {
+      freshness: { cycleDays: 30, lastReviewedAt: ago(9 * d), nextDueAt: ago(-21 * d), paused: false }
+    })
+  }
+  // doc-8 第 1 轮复核已完成：仅在文档保持种子原样（未被用户编辑）时补充演示留痕
+  const doc8 = await db.docs.get('doc-8')
+  if (doc8 && !doc8.freshness && (doc8.versions || []).length === 1 && !(await db.reviews.get('rev-6'))) {
+    const resolvedAt = ago(4 * d + 2 * h)
+    await db.reviews.add(seedReview6)
+    await db.freshTickets.bulkAdd(seedFreshTickets)
+    if (!(await db.comments.get('cmt-r6-1'))) {
+      await db.comments.add({ id: 'cmt-r6-1', docId: 'doc-8', reviewId: 'rev-6', authorId: 'u-chen', mentionIds: [], content: '第 1 轮复核：确认密码与会话策略仍符合现状，无需修改。', createdAt: ago(5 * d) })
+    }
+    await db.docs.update('doc-8', {
+      // 复核通过后重算周期：以上次审批时间为新起点（约 3 天后到期，演示「即将到期」）
+      freshness: { cycleDays: 7, lastReviewedAt: resolvedAt, nextDueAt: ago(-70 * h), paused: false },
+      versions: [
+        ...(doc8.versions || []),
+        { version: 2, savedAt: resolvedAt, savedBy: 'u-chen', note: '复核通过后发布：确认内容仍然有效。', reviewStatus: 'approved', reviewId: 'rev-6', decidedBy: 'u-admin', freshness: { ticketId: 'fresh-1', round: 1 }, snapshot: snapOf(doc8) }
+      ]
+    })
+  }
+}
+
 export async function ensureSeeded() {
   if (await isSeeded()) return
-  await db.transaction('rw', db.users, db.categories, db.tags, db.docs, db.comments, db.shares, db.favorites, db.ratings, db.reviews, db.gapTickets, db.accessRequests, async () => {
+  await db.transaction('rw', db.users, db.categories, db.tags, db.docs, db.comments, db.shares, db.favorites, db.ratings, db.reviews, db.gapTickets, db.accessRequests, db.freshTickets, async () => {
     if ((await db.users.count()) === 0) {
       await db.users.bulkAdd(seedUsers)
       await db.categories.bulkAdd(seedCategories)
@@ -540,6 +610,7 @@ export async function ensureSeeded() {
     await ensureGapSeed()
     await ensureAccessSeed()
     await ensureRestoreSeed()
+    await ensureFreshSeed()
   })
   await setMeta('seeded', SEED_VER)
 }

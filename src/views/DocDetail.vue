@@ -10,11 +10,13 @@ import DocPill from '@/components/common/DocPill.vue'
 import MemberSelect from '@/components/common/MemberSelect.vue'
 import ShareDialog from '@/components/doc/ShareDialog.vue'
 import ReviewPanel from '@/components/doc/ReviewPanel.vue'
+import FreshnessPanel from '@/components/doc/FreshnessPanel.vue'
 import AccessApplyCard from '@/components/doc/AccessApplyCard.vue'
 import AccessPanel from '@/components/doc/AccessPanel.vue'
 import { formatFull, formatDate, avatarColor } from '@/utils/format'
 import { canEditDoc, canDeleteDoc, canViewDoc, GUEST_ID } from '@/utils/permission'
 import { versionReviewBadge, versionRestoreBadges, canSubmitReview } from '@/utils/review'
+import { versionFreshBadge } from '@/utils/fresh'
 import { diffVersionFields, diffBodyLines, docSnapshot, fieldLabels, versionRangeText } from '@/utils/version'
 import { ACCESS, accessPermLabel, grantExpireText } from '@/utils/access'
 
@@ -240,6 +242,7 @@ watch(docId, () => { if (route.name === 'docDetail') { refresh(); showVersions.v
             <span class="vnote">{{ v.note || '编辑' }}</span>
             <span v-if="versionReviewBadge(v)" class="vbadge" :class="'vb-' + versionReviewBadge(v).cls">{{ versionReviewBadge(v).text }}</span>
             <span v-for="b in versionRestoreBadges(v)" :key="b.text" class="vbadge" :class="'vb-' + b.cls">{{ b.text }}</span>
+            <span v-if="versionFreshBadge(v)" class="vbadge vb-fresh">🧊 {{ versionFreshBadge(v).text }}</span>
             <span v-if="!v.snapshot" class="vnosnap" title="旧版本记录未保存内容快照，无法对比或恢复">无快照</span>
           </div>
           <span class="vwho">{{ userById[v.savedBy]?.name || v.savedBy }}</span>
@@ -294,6 +297,8 @@ watch(docId, () => { if (route.name === 'docDetail') { refresh(); showVersions.v
         </span></div>
         <div class="row"><span class="k">最近编辑</span><span class="v">{{ formatDate(doc.updatedAt) }} · {{ userById[doc.ownerId]?.name }}</span></div>
       </div>
+
+      <FreshnessPanel :doc="doc" />
 
       <ReviewPanel :doc="doc" />
 
@@ -352,6 +357,7 @@ watch(docId, () => { if (route.name === 'docDetail') { refresh(); showVersions.v
 .vnosnap { font-size: 11px; color: var(--text-3); padding: 1px 8px; border-radius: 999px; border: 1px dashed var(--border); }
 .vb-restore { background: #e0e7ff; color: #4338ca; }
 .vb-superseded { background: var(--panel-2); color: var(--text-3); }
+.vb-fresh { background: #cffafe; color: #0e7490; }
 
 /* 对比面板 */
 .diff-panel { margin-top: 12px; border: 1px solid var(--border); border-radius: 10px; padding: 14px 18px; background: var(--panel-2); }

@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { useKbStore } from '@/stores/kb'
 import { useReviewStore } from '@/stores/review'
+import { isFreshPaused } from '@/utils/fresh'
 
 const props = defineProps({
   doc: { type: Object, required: true }
@@ -15,6 +16,8 @@ const tags = computed(() => (props.doc.tagIds || []).map((id) => kb.tagMap[id]).
 // 评审中优先以内存中流转的评审单为准（跨文档列表也能实时反映）
 const inReview = computed(() => !!reviewStore.pendingReviewOf(props.doc.id))
 const rejectedLast = computed(() => props.doc.lastReview?.status === 'rejected')
+// 知识保鲜：到期未复核，问答引用已暂停
+const freshPaused = computed(() => isFreshPaused(props.doc))
 
 const visibilityLabel = { public: '公开', team: '团队', private: '私有' }
 </script>
@@ -23,6 +26,7 @@ const visibilityLabel = { public: '公开', team: '团队', private: '私有' }
   <div class="docbadges">
     <span v-if="inReview" class="pill rv-review">⏳ 评审中</span>
     <span v-else-if="rejectedLast" class="pill rv-rejected">↩ 已驳回</span>
+    <span v-if="freshPaused" class="pill rv-fresh" title="复核周期已到期，问答引用暂停中">🧊 待复核</span>
     <span class="pill v" :class="'v-' + doc.visibility">{{ visibilityLabel[doc.visibility] || doc.visibility }}</span>
     <span class="pill cat">{{ catName }}</span>
     <span v-for="t in tags" :key="t.id" class="pill tag" :style="{ background: t.color }">{{ t.name }}</span>
@@ -34,4 +38,5 @@ const visibilityLabel = { public: '公开', team: '团队', private: '私有' }
 .v { font-size: 11px; }
 .rv-review { background: #b45309; color: #fff; font-size: 11px; }
 .rv-rejected { background: var(--danger); color: #fff; font-size: 11px; }
+.rv-fresh { background: #0e7490; color: #fff; font-size: 11px; }
 </style>

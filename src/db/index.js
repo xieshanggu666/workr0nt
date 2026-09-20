@@ -42,6 +42,13 @@ export class KnowledgeDB extends Dexie {
     this.version(5).stores({
       gapTickets: 'id, status, createdBy, claimedBy, docId, reviewId, groupId, createdAt'
     })
+    // v6：知识保鲜复核单
+    // - freshTickets：负责人设置复核周期（挂在 doc.freshness 上，随记录读写）→ 到期自动生成
+    //   复核单并暂停问答引用 → 编辑者修订送审（复核单关联评审单）→ 管理员批准恢复引用并
+    //   重算周期 / 驳回继续整改；每轮复核的 round、reviewId 与 timeline 随记录保留
+    this.version(6).stores({
+      freshTickets: 'id, docId, status, reviewId, round, createdAt'
+    })
   }
 }
 

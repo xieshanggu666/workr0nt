@@ -176,7 +176,7 @@ export const useKbStore = defineStore('kb', () => {
   async function deleteDoc(id, currentUser) {
     const userId = currentUser?.id || GUEST_ID
     let result = { status: 'ok' }
-    await db.transaction('rw', db.docs, db.comments, db.shares, db.reviews, db.accessRequests, db.gapTickets, async () => {
+    await db.transaction('rw', db.docs, db.comments, db.shares, db.reviews, db.accessRequests, db.gapTickets, db.freshTickets, async () => {
       const doc = await db.docs.get(id)
       if (!doc) { result = { status: 'missing' }; return }
       const pendingReview = await db.reviews
@@ -191,6 +191,8 @@ export const useKbStore = defineStore('kb', () => {
       await db.shares.where('docId').equals(id).delete()
       // 评审单随文档一并清理（直接按索引删除，避免与 review store 循环依赖）
       await db.reviews.where('docId').equals(id).delete()
+      // 复核单随文档一并清理（复核周期与每轮记录失去依附对象）
+      await db.freshTickets.where('docId').equals(id).delete()
       // 访问申请/授权随文档一并清理（授权失去依附对象，详情、搜索、问答、编辑入口同步消失）
       await db.accessRequests.where('docId').equals(id).delete()
       // 关联该文档的缺口工单退回处理中：答案来源/送审关联随文档删除失效，需重新关联

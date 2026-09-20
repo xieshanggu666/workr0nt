@@ -9,6 +9,7 @@ import { useEngagementStore } from '@/stores/engagement'
 import { useReviewStore } from '@/stores/review'
 import { useGapStore } from '@/stores/gap'
 import { useAccessStore } from '@/stores/access'
+import { useFreshStore } from '@/stores/fresh'
 
 const route = useRoute()
 const auth = useAuthStore()
@@ -17,11 +18,12 @@ const engagement = useEngagementStore()
 const reviewStore = useReviewStore()
 const gapStore = useGapStore()
 const accessStore = useAccessStore()
+const freshStore = useFreshStore()
 
 const isSharePage = () => route.name === 'share'
 
 onMounted(async () => {
-  await Promise.all([auth.loadUsers(), kb.loadAll(), reviewStore.loadAll(), gapStore.loadAll(), accessStore.loadAll()])
+  await Promise.all([auth.loadUsers(), kb.loadAll(), reviewStore.loadAll(), gapStore.loadAll(), accessStore.loadAll(), freshStore.loadAll()])
   // 默认以管理员登录，便于完整演示；可通过「账号与权限」切换角色
   if (!auth.user) await auth.login('admin')
   await engagement.load(auth.user?.id)

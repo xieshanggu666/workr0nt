@@ -9,6 +9,7 @@ import { canViewDoc } from '@/utils/permission'
 import { extractKeywords, scoreDoc } from '@/utils/qa'
 import { latestRestoreInfo } from '@/utils/version'
 import { gapStatusLabel } from '@/utils/gap'
+import { isFreshPaused } from '@/utils/fresh'
 import { stripHtml, highlightText, highlightTitle, extractSnippet } from '@/utils/search'
 import { formatDate } from '@/utils/format'
 
@@ -28,17 +29,27 @@ const answer = ref('')
 // 授权撤销/到期后，受限引用与正文片段即时从已渲染答案中收回，不依赖重新提问
 const rawCites = ref([])
 const rawRelated = ref([])
+// 提问时刻命中但因「到期未复核」被暂停引用的文档（知识保鲜）
+const freshPausedHits = ref([])
 const suggestions = ['Vue 如何初始化项目?', 'Dexie 怎么进行查询?', '权限模型里有哪些角色?', '新成员入职流程是什么?']
 
-// 展示用引用/相关条目：随授权记录与到期时钟响应式重算，被收回的受限内容即时消失
-const cites = computed(() => rawCites.value.filter((c) => canViewDoc(c, auth.user?.id, null, accessStore.grantOf(c.id, auth.user?.id))))
-const related = computed(() => rawRelated.value.filter((d) => canViewDoc(d, auth.user?.id, null, accessStore.grantOf(d.id, auth.user?.id))))
+const docById = computed(() => Object.fromEntries(kb.docs.map((d) => [d.id, d])))
+// 展示用引用/相关条目：随授权记录与到期时钟响应式重算，被收回的受限内容即时消失；
+// 到期未复核的文档同步暂停引用（以库中最新文档状态为准，复核通过后自动恢复）
+const grantVisibleCites = computed(() => rawCites.value.filter((c) => canViewDoc(c, auth.user?.id, null, accessStore.grantOf(c.id, auth.user?.id))))
+const cites = computed(() => grantVisibleCites.value.filter((c) => !isFreshPaused(docById.value[c.id] || c)))
+const related = computed(() => rawRelated.value.filter((d) => canViewDoc(d, auth.user?.id, null, accessStore.grantOf(d.id, auth.user?.id)) && !isFreshPaused(docById.value[d.id] || d)))
 // 已渲染答案中被收回的受限引用数（授权撤销/到期导致）
-const revokedCount = computed(() => rawCites.value.length - cites.value.length)
-// 答案文案：引用全部被收回时，不再保留「找到相关内容」的原始表述
+const revokedCount = computed(() => rawCites.value.length - grantVisibleCites.value.length)
+// 已渲染答案中因到期未复核被暂停的引用数
+const freshPausedCount = computed(() => grantVisibleCites.value.length - cites.value.length)
+// 答案文案：引用全部被收回/暂停时，不再保留「找到相关内容」的原始表述
 const answerText = computed(() => {
-  if (revokedCount.value && !cites.value.length) {
+  if (!cites.value.length && revokedCount.value) {
     return '该问题此前命中的内容来自限时授权文档，授权已撤销或到期，相关正文已同步收回。如需继续查看，请重新申请访问后再提问。'
+  }
+  if (!cites.value.length && freshPausedCount.value) {
+    return '该问题命中的内容来自到期未复核的文档，问答引用已暂停，待管理员复核通过后自动恢复。'
   }
   return answer.value
 })
@@ -47,7 +58,6 @@ const answerText = computed(() => {
 const gapFormOpen = ref(false)
 const gapDetail = ref('')
 
-const docById = computed(() => Object.fromEntries(kb.docs.map((d) => [d.id, d])))
 // 当前问题是否已有未解决工单（创建后/已存在都会命中，避免重复提交）
 const activeTicket = computed(() => (asked.value ? gapStore.activeTicketForQuestion(asked.value) : null))
 // 已解决工单中匹配本问题的答案来源（审批发布后自动回填，此处对提问者可见）
@@ -79,6 +89,7 @@ function answering() {
   answer.value = ''
   rawCites.value = []
   rawRelated.value = []
+  freshPausedHits.value = []
   gapFormOpen.value = false
   gapDetail.value = ''
 
@@ -86,16 +97,22 @@ function answering() {
     const keywords = extractKeywords(asked.value)
     const tagNames = kb.tags
     // 权限：撤销/到期的授权文档不再作为问答引用来源
-    const hits = kb.docs.filter((d) => canViewDoc(d, auth.user?.id, null, accessStore.grantOf(d.id, auth.user?.id))).map((d) => ({
+    const scored = kb.docs.filter((d) => canViewDoc(d, auth.user?.id, null, accessStore.grantOf(d.id, auth.user?.id))).map((d) => ({
       doc: d,
       bodyText: stripHtml(d.body),
       score: scoreDoc(d, keywords, tagNames, stripHtml(d.body))
     })).filter((x) => x.score > 0).sort((a, b) => b.score - a.score)
 
+    // 知识保鲜：到期未复核的文档暂停问答引用，复核通过后自动恢复
+    const hits = scored.filter((x) => !isFreshPaused(x.doc))
+    freshPausedHits.value = scored.filter((x) => isFreshPaused(x.doc)).map((x) => x.doc)
+
     const top = hits[0]
     if (!top) {
       answered.value = true
-      answer.value = '很抱歉，知识库中暂时没有与「' + asked.value + '」直接匹配的内容。建议你换一种表述，或浏览文档库 / 使用全局搜索。'
+      answer.value = freshPausedHits.value.length
+        ? '检索到的相关内容来自 ' + freshPausedHits.value.length + ' 篇到期未复核的文档，问答引用已暂停。待编辑者修订送审、管理员复核通过后自动恢复。'
+        : '很抱歉，知识库中暂时没有与「' + asked.value + '」直接匹配的内容。建议你换一种表述，或浏览文档库 / 使用全局搜索。'
       return
     }
 
@@ -137,6 +154,11 @@ watch(() => route.query.q, (v) => { if (v) { question.value = v; ask(v) } }, { i
       <div class="a-label">助手回答<span class="sub-ask">问题：{{ asked }}</span></div>
       <p class="a-text">{{ answerText }}</p>
       <div v-if="revokedCount" class="revoked-note">🔒 {{ revokedCount }} 条引用来自限时授权文档，授权已撤销或到期，相关正文已同步收回</div>
+      <div v-if="freshPausedCount" class="fresh-note">⏳ {{ freshPausedCount }} 条引用所在文档到期未复核，已暂停引用，复核通过后恢复</div>
+      <div v-if="freshPausedHits.length" class="fresh-note">
+        ⏳ {{ freshPausedHits.length }} 篇相关文档因到期未复核已暂停引用：
+        <span v-for="d in freshPausedHits" :key="d.id" class="fresh-doc" @click="router.push('/docs/' + d.id)">{{ d.title }}</span>
+      </div>
 
       <div v-if="cites.length" class="cites">
         <div class="block-title">📎 引用出处</div>
@@ -215,6 +237,10 @@ watch(() => route.query.q, (v) => { if (v) { question.value = v; ask(v) } }, { i
 .sub-ask { font-weight: 400; font-size: 12px; color: var(--text-3); }
 .a-text { margin: 8px 0 18px; color: var(--text); }
 .revoked-note { margin: -8px 0 14px; padding: 8px 14px; border-radius: 8px; font-size: 13px; color: #b45309; background: #fffbeb; border: 1px solid #f59e0b; }
+.fresh-note { margin: -8px 0 14px; padding: 8px 14px; border-radius: 8px; font-size: 13px; color: #0e7490; background: #ecfeff; border: 1px solid #67e8f9; }
+.revoked-note + .fresh-note, .fresh-note + .fresh-note { margin-top: -6px; }
+.fresh-doc { display: inline-block; margin: 2px 6px 2px 0; padding: 1px 10px; border-radius: 999px; background: #cffafe; cursor: pointer; font-weight: 600; }
+.fresh-doc:hover { background: #a5f3fc; }
 .block-title { font-weight: 600; font-size: 13px; color: var(--text-2); margin: 16px 0 10px; }
 .cites { display: flex; flex-direction: column; gap: 10px; }
 .cite { border: 1px solid var(--border); border-radius: 10px; padding: 12px 16px; cursor: pointer; }

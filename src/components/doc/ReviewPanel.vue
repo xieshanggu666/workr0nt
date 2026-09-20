@@ -172,6 +172,7 @@ watch(pending, (p) => { if (!p) decisionOpen.value = false })
         <span class="tm">{{ formatFull(pending.submittedAt) }}</span>
         <span class="ver">基于 v{{ pending.baseVersion }}</span>
         <span v-if="restoreFrom" class="restore-tag">↩ 恢复至 v{{ restoreFrom.version }}</span>
+        <span v-if="pending.freshRound" class="fresh-tag">🧊 第 {{ pending.freshRound }} 轮复核</span>
       </div>
 
       <!-- 恢复评审：恢复目标、回滚边界预览与正文差异 -->
@@ -301,6 +302,7 @@ watch(pending, (p) => { if (!p) decisionOpen.value = false })
 .ava { width: 24px; height: 24px; border-radius: 50%; color: #fff; font-size: 11px; display: inline-grid; place-items: center; }
 .tm, .ver { color: var(--text-3); font-size: 12px; }
 .restore-tag { font-size: 11px; padding: 1px 9px; border-radius: 999px; background: #e0e7ff; color: #4338ca; font-weight: 600; }
+.fresh-tag { font-size: 11px; padding: 1px 9px; border-radius: 999px; background: #cffafe; color: #0e7490; font-weight: 600; }
 .restore-tag.sm { font-size: 10px; padding: 0 7px; }
 .restore-info { margin-top: 10px; padding: 10px 14px; border-radius: 8px; background: #eef2ff; border: 1px solid #c7d2fe; }
 .ri-line { font-size: 12.5px; color: #3730a3; margin-bottom: 6px; line-height: 1.6; }
